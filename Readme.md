@@ -1,5 +1,5 @@
 # sqanner
-Simple Tool for webhacking 
+
 
 This tool focuses on finding SQL injection vulnerabilities in URLs, but it can also be used for additional purposes.
 
