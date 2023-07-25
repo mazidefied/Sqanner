@@ -2,91 +2,89 @@ import datetime
 import argparse
 import requests
 import fake_useragent
-import threading
-from queue import Queue
-import time
+import concurrent.futures
 import os
-import platform
 import easygui
-import os.path
-def create_Vuln_file():
-    with open("sqli.txt", "w") as file:
+
+
+def create_vuln_file():
+    with open("SqliVuln.txt", "w"):
         pass
+
+
 def banner():
-  return  """
-  SQANNER
-  Simple Script for Scanning The Web for vulns
-                                                                                       
+    return """
+  Simple Script for Scanning The Web for SQLI vulns
   """
-def convert_cert(burpcert, to_pem=True):
+
+
+def convert_cert(burp_cert, to_pem=True):
     if to_pem:
-        if platform.system() == 'Windows':
-            os.system("certutil -encode "+burpcert+" burp.pem")
-        elif platform.system() == 'Linux':
-            os.system("openssl x509 -inform der "+burpcert+" -out burp.pem")
+        os.system(f"openssl x509 -inform der {burp_cert} -out burp.pem")
     else:
         print("Conversion to PEM format not requested.")
+
+
 def generate_user_agent():
     user_agent = fake_useragent.UserAgent().random
     return user_agent
 
 
-def test_url(url, payload, use_cookies, proxies, result_queue, generate_user_agent, cert_path):
+def test_url(url, payload, use_cookies, proxies, generate_user_agent, cert_path):
     # Add payload to URL
     url_with_payload = f"{url}{payload}"
 
     # Send the request with the payload
-    headers = {}
-    if generate_user_agent:
-        headers['User-Agent'] = generate_user_agent()
-    if use_cookies:
-        cookies = {'cookie1': 'value1', 'cookie2': 'value2'}
-        response = requests.get(url_with_payload, headers=headers, cookies=cookies, proxies=proxies, verify=cert_path)
-    else:
-        response = requests.get(url_with_payload, headers=headers, proxies=proxies, verify=cert_path)
+    headers = {'User-Agent': generate_user_agent()} if generate_user_agent else {}
+    cookies = {'cookie1': 'value1', 'cookie2': 'value2'} if use_cookies else None
 
-    # Check for SQL injection vulnerabilities in the response text
-    sql_keywords = ['error', 'syntax error', 'mysql', 'postgre', 'oracle', 'microsoft', 'informix', 'db2', 'sqlite', 'sybase']
-    for keyword in sql_keywords:
-        if keyword in response.text.lower():
-            result_queue.put((url_with_payload, payload))
-            break
-    else:
-        print(f"[-] No SQL injection vulnerability found at {url_with_payload} Try different payloads")
+    try:
+        response = requests.get(url_with_payload, headers=headers, cookies=cookies, proxies=proxies, verify=cert_path)
+        response.raise_for_status()  # Raise an exception for non-200 status codes
+        if any(keyword in response.text.lower() for keyword in ['error', 'syntax error', 'mysql', 'postgre',
+                                                                'oracle', 'microsoft', 'informix', 'db2', 'sqlite',
+                                                                'sybase']):
+            return url_with_payload, payload
+    except (requests.RequestException, requests.Timeout):
+        pass
+    return None
 
 
 def test_urls(urls, payload, use_cookies, num_threads, proxies, generate_user_agent, cert_path):
-    result_queue = Queue()
-    start_time = time.time()
+    vuln_list = []  # List to store the vulnerabilities found
+    create_vuln_file()  # Just create the file but don't write to it yet
+    start_time = datetime.datetime.now()
 
-    for url in urls:
-        t = threading.Thread(target=test_url, args=(url, payload, use_cookies, proxies, result_queue, generate_user_agent, cert_path))
-        t.start()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(test_url, url, payload, use_cookies, proxies, generate_user_agent, cert_path)
+                   for url in urls]
 
-    for t in threading.enumerate():
-        if t != threading.current_thread():
-            t.join()
+        # Wait for all tasks to complete
+        concurrent.futures.wait(futures)
 
-    while not result_queue.empty():
-        url, payload = result_queue.get()
-        print(f"[+] SQL injection vulnerability found at {url} (payload={payload})")
-        now = datetime.datetime.now()
+        # Collect the vulnerabilities from completed futures
+        for future in futures:
+            result = future.result()
+            if result is not None:
+                vuln_list.append(result)
 
-        date_time_string = now.strftime("%Y-%m-%d_%H-%M-%S")
-        with open("SqliVuln.txt",'a') as vuln:
-            vuln.write(f"[+] SQL injection vulnerability found at {url} (payload={payload}) Date:"+date_time_string+"\n")
+    # Write all vulnerabilities to the file in a single operation
+    now = datetime.datetime.now()
+    date_time_string = now.strftime("%Y-%m-%d_%H-%M-%S")
+    with open("SqliVuln.txt", 'a') as vuln_file:
+        for url, payload in vuln_list:
+            vuln_file.write(f"[+] SQL injection vulnerability found at {url} (payload={payload}) Date:{date_time_string}\n")
 
-    elapsed_time = time.time() - start_time
-    print(f"Scan completed in {elapsed_time:.2f} seconds.")
+    elapsed_time = datetime.datetime.now() - start_time
+    print(f"Scan completed in {elapsed_time.total_seconds():.2f} seconds.")
     print("All vuln Targets Saved at SqliVuln.txt")
 
 
 if __name__ == '__main__':
     print(banner())
-    if os.path.exists("SqliVuln.txt") == False:
-        create_Vuln_file()
     parser = argparse.ArgumentParser(description='Test a list of URLs for SQL injection vulnerabilities')
-    parser.add_argument("--convert-burpcert",action='store_true',help="Convert Burp Cert to a Format suppoerted for this script")
+    parser.add_argument("--convert-burpcert", action='store_true',
+                        help="Convert Burp Cert to a Format supported for this script")
     parser.add_argument('--url', help='Single URL to test for SQL injection vulnerabilities')
     parser.add_argument('url_file', nargs='?', default=None, help='Path to a file containing a list of URLs')
     parser.add_argument('--payload', help='Payload to be used for testing SQL injection vulnerabilities')
@@ -96,6 +94,7 @@ if __name__ == '__main__':
     parser.add_argument('--random-user-agent', action='store_true', help='Generate a random user agent for each request')
     parser.add_argument('--cert-path', help='Path to a certificate file for the proxy')
     args = parser.parse_args()
+
     if args.convert_burpcert:
         cert_file = easygui.fileopenbox(msg='Select Burp Suite certificate file', title='Select certificate file',
                                         filetypes='*.der')
@@ -114,25 +113,15 @@ if __name__ == '__main__':
             urls = f.read().splitlines()
     else:
         parser.error('You must specify either a URL or a URL file.')
-    if args.payload is None:
-        payload = "'"
-    else:
-        payload = args.payload
 
+    payload = "'" if args.payload is None else args.payload
     use_cookies = args.use_cookies
     num_threads = args.num_threads
 
-    if args.proxy is not None:
-        proxies = {'http': args.proxy, 'https': args.proxy}
-    else:
-        proxies = None
+    proxies = {'http': args.proxy, 'https': args.proxy} if args.proxy is not None else None
 
-    if args.random_user_agent:
-        generate_user_agent = lambda: fake_useragent.UserAgent().random
-    else:
-        generate_user_agent = None
+    generate_user_agent = lambda: fake_useragent.UserAgent().random if args.random_user_agent else None
 
     cert_path = args.cert_path
 
     test_urls(urls, payload, use_cookies, num_threads, proxies, generate_user_agent, cert_path)
-
